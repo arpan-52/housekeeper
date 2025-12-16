@@ -1,0 +1,172 @@
+Metadata-Version: 2.1
+Name: housekeeper
+Version: 0.1.0
+Summary: HPC job management with intelligent failure tracking
+Author: housekeeper contributors
+License: MIT
+Project-URL: Homepage, https://github.com/yourusername/housekeeper
+Project-URL: Repository, https://github.com/yourusername/housekeeper
+Keywords: hpc,slurm,pbs,job-scheduler,cluster
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Science/Research
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: POSIX :: Linux
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: System :: Distributed Computing
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: pytest-cov; extra == "dev"
+Requires-Dist: black; extra == "dev"
+Requires-Dist: ruff; extra == "dev"
+
+# housekeeper
+
+HPC job management with intelligent failure tracking for SLURM and PBS clusters.
+
+## Features
+
+- **Simple API**: Submit jobs with `submit()`, track with `track()`, monitor with `monitor()`
+- **Smart failure detection**: Parses scheduler logs for errors with configurable whitelist
+- **Dependency management**: Chain jobs with `after_ok`, `after_fail`, `after_any`
+- **File validation**: Verify expected output files exist after job completion
+- **Auto-retry**: Automatically retry failed jobs with configurable limits
+- **Persistent state**: SQLite database tracks all job history
+
+## Installation
+
+```bash
+pip install housekeeper
+```
+
+Or from source:
+
+```bash
+git clone https://github.com/yourusername/housekeeper.git
+cd housekeeper
+pip install -e .
+```
+
+## Quick Start
+
+```python
+from housekeeper import Housekeeper
+
+# Initialize (auto-detects SLURM or PBS)
+hk = Housekeeper(workdir="./my_pipeline")
+
+# Submit a job
+job1 = hk.submit(
+    command="python process.py --input data.fits",
+    name="process",
+    cpus=8,
+    memory="32GB",
+    walltime="02:00:00",
+    expected_files=["output.fits"],
+)
+
+# Submit dependent job
+job2 = hk.submit(
+    command="python analyze.py",
+    name="analyze",
+    after_ok=[job1],
+)
+
+# Monitor until completion
+hk.monitor([job1, job2])
+
+# Check results
+for job in hk.list_jobs():
+    print(f"{job['name']}: {job['status']}")
+```
+
+## Error Whitelisting
+
+Many HPC applications emit warnings that look like errors. Provide a whitelist:
+
+```python
+hk = Housekeeper(
+    workdir="./pipeline",
+    error_whitelist=[
+        "WARN",
+        "FutureWarning",
+        "DeprecationWarning",
+        "Leap second table TAI_UTC seems out-of-date",
+    ],
+    whitelist_threshold=3,  # Word match threshold
+)
+```
+
+## API Reference
+
+### Housekeeper
+
+```python
+hk = Housekeeper(
+    workdir="./jobs",           # Working directory for job files
+    scheduler=None,             # "slurm", "pbs", or None for auto-detect
+    db_path=None,               # SQLite path (default: workdir/housekeeper.db)
+    error_whitelist=None,       # List of error patterns to ignore
+    whitelist_threshold=3,      # Word match threshold for whitelist
+)
+```
+
+### submit()
+
+```python
+job_id = hk.submit(
+    command="...",              # Command to run
+    name="job_name",            # Job name
+    nodes=1,                    # Number of nodes
+    cpus=1,                     # CPUs per node
+    gpus=0,                     # GPUs per node
+    memory="4GB",               # Memory
+    walltime="01:00:00",        # Wall time limit
+    queue=None,                 # Queue/partition
+    account=None,               # Account/project
+    expected_files=[],          # Files that should exist after completion
+    after_ok=[],                # Run after these jobs complete successfully
+    after_fail=[],              # Run after these jobs fail
+    after_any=[],               # Run after these jobs finish (any status)
+    max_retries=0,              # Auto-retry count on failure
+    env=None,                   # Environment variables dict
+)
+```
+
+### track()
+
+```python
+status = hk.track(job_id)       # Returns JobStatus enum
+```
+
+### monitor()
+
+```python
+results = hk.monitor(
+    job_ids,                    # List of job IDs
+    poll_interval=30,           # Seconds between checks
+)
+```
+
+### Other methods
+
+```python
+hk.cancel(job_id)               # Cancel a job
+hk.retry(job_id)                # Retry a failed job
+hk.list_jobs(status=None)       # List jobs, optionally filter by status
+hk.job_info(job_id)             # Get detailed job info
+hk.failure_info(job_id)         # Get failure details
+hk.cleanup(job_id)              # Remove job files
+hk.export_state(path)           # Export state to JSON
+```
+
+## License
+
+MIT
