@@ -28,15 +28,16 @@ pip install -e .
 ## Quick Start
 
 ```python
-from housekeeper import Housekeeper
+from housekeeper import housekeeper
 
-# Initialize (auto-detects SLURM or PBS)
-hk = Housekeeper(workdir="./my_pipeline")
+# Single directory for all jobs in this code run
+hk = housekeeper(jobs_dir="./my_pipeline_run")
 
-# Submit a job
+# Submit a job (optional: name the subdirectory)
 job1 = hk.submit(
     command="python process.py --input data.fits",
     name="process",
+    job_subdir="preprocessing",  # Custom subdir name
     cpus=8,
     memory="32GB",
     walltime="02:00:00",
@@ -45,8 +46,9 @@ job1 = hk.submit(
 
 # Submit dependent job
 job2 = hk.submit(
-    command="python analyze.py",
+    command="python analyze.py --input output.fits",
     name="analyze",
+    job_subdir="analysis",
     after_ok=[job1],
 )
 
@@ -58,13 +60,53 @@ for job in hk.list_jobs():
     print(f"{job['name']}: {job['status']}")
 ```
 
+**Directory structure:**
+```
+my_pipeline_run/
+├── housekeeper.db          # Job database
+├── preprocessing/          # job1 (you named it)
+│   ├── process.sh
+│   ├── stdout.log
+│   └── stderr.log
+└── analysis/               # job2 (you named it)
+    ├── analyze.sh
+    ├── stdout.log
+    └── stderr.log
+```
+
+**For large pipelines (millions of jobs):**
+
+```python
+# Single directory for entire run
+hk = housekeeper(jobs_dir=f"./calibration_run_{obs_id}")
+
+# Submit many jobs with custom subdirs
+for spw in range(1000):
+    job = hk.submit(
+        command=f"calibrate.py --spw {spw}",
+        name=f"cal_spw{spw}",
+        job_subdir=f"spw_{spw:03d}",  # spw_000, spw_001, ...
+        cpus=4
+    )
+```
+
+Result:
+```
+calibration_run_12345/
+├── housekeeper.db
+├── spw_000/
+├── spw_001/
+├── spw_002/
+└── ... (1000 total)
+```
+
 ## Error Whitelisting
 
 Many HPC applications emit warnings that look like errors. Provide a whitelist:
 
 ```python
-hk = Housekeeper(
-    workdir="./pipeline",
+hk = housekeeper(
+    jobs_dir="./pipeline",
     error_whitelist=[
         "WARN",
         "FutureWarning",
@@ -77,13 +119,13 @@ hk = Housekeeper(
 
 ## API Reference
 
-### Housekeeper
+### housekeeper
 
 ```python
-hk = Housekeeper(
-    workdir="./jobs",           # Working directory for job files
+hk = housekeeper(
+    jobs_dir="./my_jobs",       # Directory for all jobs in this run
     scheduler=None,             # "slurm", "pbs", or None for auto-detect
-    db_path=None,               # SQLite path (default: workdir/housekeeper.db)
+    db_path=None,               # SQLite path (default: jobs_dir/housekeeper.db)
     error_whitelist=None,       # List of error patterns to ignore
     whitelist_threshold=3,      # Word match threshold for whitelist
 )
@@ -95,6 +137,7 @@ hk = Housekeeper(
 job_id = hk.submit(
     command="...",              # Command to run
     name="job_name",            # Job name
+    job_subdir=None,            # Custom subdirectory name (default: job_id)
     nodes=1,                    # Number of nodes
     cpus=1,                     # CPUs per node
     gpus=0,                     # GPUs per node

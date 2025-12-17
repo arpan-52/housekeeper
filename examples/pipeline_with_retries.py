@@ -15,9 +15,9 @@ radio_whitelist = [
     "No sources found in catalog",
 ]
 
-# Initialize
+# Initialize - all jobs go into single directory
 hk = housekeeper(
-    workdir="./radio_pipeline",
+    jobs_dir="./radio_pipeline",
     error_whitelist=radio_whitelist,
     whitelist_threshold=3
 )
@@ -26,6 +26,7 @@ hk = housekeeper(
 cal_job = hk.submit(
     command="python calibrate.py --input raw.ms",
     name="calibration",
+    job_subdir="calibration",  # Named directory
     cpus=16,
     memory="64GB",
     walltime="04:00:00",
@@ -37,6 +38,7 @@ cal_job = hk.submit(
 img_job = hk.submit(
     command="wsclean -name image -size 8192 8192 -scale 1asec calibrated.ms",
     name="imaging",
+    job_subdir="imaging",
     gpus=1,
     cpus=8,
     memory="128GB",
@@ -49,6 +51,7 @@ img_job = hk.submit(
 src_job = hk.submit(
     command="python source_find.py --image image-MFS-image.fits",
     name="source_finding",
+    job_subdir="source_finding",
     cpus=4,
     memory="16GB",
     after_ok=[img_job],
@@ -81,3 +84,10 @@ for result in results:
 print("\n=== All Jobs ===")
 for job in hk.list_jobs():
     print(f"{job['name']}: {job['status']} (retries: {job['retry_count']}/{job['max_retries']})")
+
+print("\n=== Directory Structure ===")
+print("radio_pipeline/")
+print("├── housekeeper.db")
+print("├── calibration/")
+print("├── imaging/")
+print("└── source_finding/")

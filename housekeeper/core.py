@@ -21,13 +21,14 @@ class housekeeper:
     Main housekeeper class for HPC job management
     
     Example:
-        >>> hk = housekeeper(workdir="./pipeline")
-        >>> job_id = hk.submit("python train.py", name="training", gpus=2)
+        >>> hk = housekeeper(jobs_dir="./calibration_run")
+        >>> job_id = hk.submit("python train.py", name="training", 
+        ...                     job_subdir="training_model", gpus=2)
         >>> hk.monitor([job_id])
     """
     
     def __init__(self,
-                 workdir: str = "./housekeeper_jobs",
+                 jobs_dir: str = "./housekeeper_jobs",
                  scheduler: Optional[str] = None,
                  db_path: Optional[str] = None,
                  error_whitelist: Optional[List[str]] = None,
@@ -36,19 +37,19 @@ class housekeeper:
         Initialize housekeeper
         
         Args:
-            workdir: Working directory for job files
+            jobs_dir: Directory for all jobs in this run
             scheduler: "slurm", "pbs", or None for auto-detect
-            db_path: Path to SQLite database (default: workdir/housekeeper.db)
+            db_path: Path to SQLite database (default: jobs_dir/housekeeper.db)
             error_whitelist: List of error patterns to ignore in logs
             whitelist_threshold: Word match threshold for whitelist
         """
         # Setup directories
-        self.workdir = Path(workdir).absolute()
-        self.workdir.mkdir(parents=True, exist_ok=True)
+        self.jobs_dir = Path(jobs_dir).absolute()
+        self.jobs_dir.mkdir(parents=True, exist_ok=True)
         
         # Initialize database
         if db_path is None:
-            db_path = self.workdir / "housekeeper.db"
+            db_path = self.jobs_dir / "housekeeper.db"
         self.db = database(str(db_path))
         
         # Initialize scheduler backend
@@ -82,6 +83,7 @@ class housekeeper:
     def submit(self,
                command: str,
                name: Optional[str] = None,
+               job_subdir: Optional[str] = None,
                nodes: int = 1,
                cpus: int = 1,
                gpus: int = 0,
@@ -101,6 +103,7 @@ class housekeeper:
         Args:
             command: Command to execute
             name: Job name (auto-generated if not provided)
+            job_subdir: Custom subdirectory name (default: job_id)
             nodes: Number of nodes
             cpus: CPUs per node
             gpus: GPUs per node
@@ -124,6 +127,8 @@ class housekeeper:
         # Set defaults
         if name is None:
             name = f"job_{job_id}"
+        if job_subdir is None:
+            job_subdir = job_id
         if expected_files is None:
             expected_files = []
         if after_ok is None:
@@ -135,9 +140,9 @@ class housekeeper:
         if env is None:
             env = {}
         
-        # Create job directory
-        job_dir = self.workdir / job_id
-        job_dir.mkdir(exist_ok=True)
+        # Create job directory with custom name
+        job_dir = self.jobs_dir / job_subdir
+        job_dir.mkdir(exist_ok=True, parents=True)
         
         # Create resources
         resources = job_resources(

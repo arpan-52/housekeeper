@@ -6,8 +6,9 @@ Basic usage example for housekeeper
 from housekeeper import housekeeper
 
 # Initialize housekeeper with custom error whitelist
+# All jobs go into a single directory
 hk = housekeeper(
-    workdir="./my_pipeline",
+    jobs_dir="./my_pipeline",
     error_whitelist=[
         "WARN",
         "FutureWarning",
@@ -15,10 +16,11 @@ hk = housekeeper(
     ]
 )
 
-# Submit a simple job
+# Submit a simple job with custom subdirectory name
 job1 = hk.submit(
     command="python process_data.py --input data.fits",
     name="process",
+    job_subdir="preprocessing",  # Custom name instead of random ID
     cpus=4,
     memory="16GB",
     walltime="01:00:00",
@@ -31,6 +33,7 @@ print(f"Submitted job: {job1}")
 job2 = hk.submit(
     command="python analyze.py --input output.fits",
     name="analyze",
+    job_subdir="analysis",
     after_ok=[job1],
     cpus=2,
     memory="8GB"
@@ -51,3 +54,15 @@ for result in results:
 
 # Export state for debugging
 hk.export_state("pipeline_state.json")
+
+print("\nDirectory structure:")
+print("my_pipeline/")
+print("├── housekeeper.db")
+print("├── preprocessing/")
+print("│   ├── process.sh")
+print("│   ├── stdout.log")
+print("│   └── stderr.log")
+print("└── analysis/")
+print("    ├── analyze.sh")
+print("    ├── stdout.log")
+print("    └── stderr.log")
