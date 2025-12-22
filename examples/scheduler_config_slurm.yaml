@@ -1,0 +1,39 @@
+# Example scheduler configuration for NRAO cluster (SLURM)
+# Save as: scheduler_config.yaml
+
+scheduler: slurm
+
+# Directories
+working_dir: null
+job_dir: ./jobs
+
+# SLURM-specific configuration
+slurm:
+  # Account for job billing (if required)
+  account: null
+  
+  # Partition (queue) configuration
+  queues:
+    default: batch      # Default partition
+    gpu: gpu            # GPU partition
+    high_mem: himem     # High memory partition
+    express: express    # Express/priority partition
+  
+  # GPU configuration
+  gpu:
+    enabled: true
+    gres: "gpu:1"       # GPU resource string
+    partition: gpu      # GPU partition name
+    modules:
+      - cuda/12.3
+  
+  # Directives added to EVERY job
+  directives:
+    - "--export=ALL"
+  
+  # Modules loaded for EVERY job
+  modules:
+    - python/3.10
+  
+  # Environment variables
+  env_vars: {}

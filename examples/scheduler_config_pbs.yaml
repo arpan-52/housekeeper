@@ -1,0 +1,43 @@
+# Example scheduler configuration for NCRA Bhima cluster (PBS/OpenPBS)
+# Save as: scheduler_config.yaml
+
+scheduler: pbs
+
+# Directories
+working_dir: null  # Use current directory
+job_dir: ./jobs    # Where job scripts and logs go
+
+# PBS-specific configuration
+pbs:
+  # Resource syntax style
+  # 'select' for OpenPBS (modern): select=1:ncpus=4:mem=32gb
+  # 'nodes' for Torque (older): nodes=1:ppn=4
+  resource_style: select
+  
+  # Queue configuration
+  queues:
+    default: workq      # Default CPU queue
+    gpu: gpu            # GPU queue
+    high_mem: null      # High memory queue (if available)
+    express: null       # Express/priority queue (if available)
+  
+  # GPU configuration
+  gpu:
+    enabled: true
+    host: bhima04       # GPU node hostname
+    ngpus: 1            # GPUs to request per job
+    modules:
+      - cuda/12.3       # CUDA module to load for GPU jobs
+  
+  # Directives added to EVERY job script
+  directives:
+    - "-V"              # Export all environment variables
+    - "-j oe"           # Merge stdout and stderr
+  
+  # Modules loaded for EVERY job
+  modules:
+    - python/3.10
+  
+  # Environment variables for all jobs
+  env_vars:
+    OMP_NUM_THREADS: "4"

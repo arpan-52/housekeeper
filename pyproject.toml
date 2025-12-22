@@ -1,50 +1,26 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "housekeeper"
-version = "0.1.0"
-description = "HPC job management with intelligent failure tracking"
+version = "2.0.0"
+description = "HPC Job Management Library for PBS and SLURM"
 readme = "README.md"
-license = {text = "MIT"}
 requires-python = ">=3.8"
-classifiers = [
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: POSIX :: Linux",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Topic :: System :: Distributed Computing",
+license = {text = "MIT"}
+dependencies = [
+    "pyyaml>=5.0",
 ]
-keywords = ["hpc", "slurm", "pbs", "job-scheduler", "cluster"]
-dependencies = []
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=7.0",
-    "pytest-cov",
-    "black",
-    "ruff",
-]
-
-[project.urls]
-Homepage = "https://github.com/yourusername/housekeeper"
-Repository = "https://github.com/yourusername/housekeeper"
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["housekeeper*"]
+dev = ["pytest", "black", "mypy"]
 
 [tool.black]
 line-length = 100
-target-version = ["py38"]
+target-version = ['py38', 'py39', 'py310', 'py311']
 
-[tool.ruff]
-line-length = 100
-select = ["E", "F", "W", "I"]
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true

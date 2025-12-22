@@ -1,531 +1,496 @@
+# housekeeper/core.py
 """
-Main housekeeper class - user-facing API
+Housekeeper - HPC Job Management Library
+
+Main interface for job submission, tracking, and management.
 """
 
+import os
+import uuid
 import time
-import json
-import shutil
-from pathlib import Path
-from typing import List, Optional, Dict, Any
 from datetime import datetime
+from typing import Optional, List, Dict, Any, Union
+from pathlib import Path
 
-from .job import job, job_status, job_resources, failure_type
-from .database import database
-from .scheduler import slurm_scheduler, pbs_scheduler
-from .tracking import log_parser, failure_detector
-from .utils import generate_job_id, detect_scheduler
+from .config import SchedulerConfig, load_config, parse_config
+from .job import Job, JobState
+from .database import JobDatabase
+from .scheduler import PBSScheduler, SLURMScheduler, BaseScheduler
 
 
-class housekeeper:
+class Housekeeper:
     """
-    Main housekeeper class for HPC job management
+    Main housekeeper interface for HPC job management.
     
-    Example:
-        >>> hk = housekeeper(jobs_dir="./calibration_run")
-        >>> job_id = hk.submit("python train.py", name="training", 
-        ...                     job_subdir="training_model", gpus=2)
-        >>> hk.monitor([job_id])
+    Usage:
+        hk = Housekeeper()
+        hk.set_config('scheduler_config.yaml')
+        
+        job = hk.submit(
+            command="python train.py",
+            name="train_model",
+            nodes=1, ppn=8,
+            walltime="04:00:00"
+        )
+        
+        hk.wait(job.job_id)
     """
     
-    def __init__(self,
-                 jobs_dir: str = "./housekeeper_jobs",
-                 scheduler: Optional[str] = None,
-                 db_path: Optional[str] = None,
-                 error_whitelist: Optional[List[str]] = None,
-                 whitelist_threshold: int = 3):
+    def __init__(self, config: Union[str, Dict, SchedulerConfig, None] = None,
+                 jobs_dir: str = "./jobs", scheduler: Optional[str] = None):
         """
-        Initialize housekeeper
+        Initialize Housekeeper.
         
         Args:
-            jobs_dir: Directory for all jobs in this run
-            scheduler: "slurm", "pbs", or None for auto-detect
-            db_path: Path to SQLite database (default: jobs_dir/housekeeper.db)
-            error_whitelist: List of error patterns to ignore in logs
-            whitelist_threshold: Word match threshold for whitelist
+            config: Config file path, dict, or SchedulerConfig object
+            jobs_dir: Directory for job scripts and database
+            scheduler: Override scheduler type ('pbs' or 'slurm')
         """
-        # Setup directories
-        self.jobs_dir = Path(jobs_dir).absolute()
+        self.jobs_dir = Path(jobs_dir)
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
         
-        # Initialize database
-        if db_path is None:
-            db_path = self.jobs_dir / "housekeeper.db"
-        self.db = database(str(db_path))
+        # Database
+        self.db = JobDatabase(str(self.jobs_dir / "housekeeper.db"))
         
-        # Initialize scheduler backend
-        if scheduler:
-            if scheduler.lower() == "slurm":
-                self.backend = slurm_scheduler()
-            elif scheduler.lower() == "pbs":
-                self.backend = pbs_scheduler()
-            else:
-                raise ValueError(f"unknown scheduler: {scheduler}")
+        # Config
+        self.config: Optional[SchedulerConfig] = None
+        self._scheduler: Optional[BaseScheduler] = None
+        
+        if config:
+            self.set_config(config)
+        elif scheduler:
+            self._init_scheduler(scheduler)
         else:
-            # Auto-detect
-            detected = detect_scheduler()
-            if detected == "slurm":
-                self.backend = slurm_scheduler()
-            elif detected == "pbs":
-                self.backend = pbs_scheduler()
-            else:
-                raise RuntimeError("no scheduler found (need sbatch or qsub)")
-        
-        if not self.backend.check_available():
-            raise RuntimeError(f"scheduler not available")
-        
-        # Initialize tracking
-        self.log_parser = log_parser(
-            error_whitelist=error_whitelist,
-            whitelist_threshold=whitelist_threshold
-        )
-        self.failure_detector = failure_detector(self.log_parser)
+            # Try to auto-detect
+            self._auto_detect_scheduler()
     
-    def submit(self,
-               command: str,
-               name: Optional[str] = None,
-               job_subdir: Optional[str] = None,
-               nodes: int = 1,
-               cpus: int = 1,
-               gpus: int = 0,
-               memory: str = "4GB",
-               walltime: str = "01:00:00",
-               queue: Optional[str] = None,
-               account: Optional[str] = None,
-               expected_files: Optional[List[str]] = None,
-               after_ok: Optional[List[str]] = None,
-               after_fail: Optional[List[str]] = None,
-               after_any: Optional[List[str]] = None,
-               max_retries: int = 0,
-               env: Optional[Dict[str, str]] = None) -> str:
+    def set_config(self, config: Union[str, Dict, SchedulerConfig]):
         """
-        Submit a job
+        Set scheduler configuration.
+        
+        Args:
+            config: Config file path, dict, or SchedulerConfig object
+        """
+        if isinstance(config, str):
+            self.config = load_config(config)
+        elif isinstance(config, dict):
+            self.config = parse_config(config)
+        elif isinstance(config, SchedulerConfig):
+            self.config = config
+        else:
+            raise ValueError(f"Invalid config type: {type(config)}")
+        
+        self._init_scheduler(self.config.scheduler)
+    
+    def _init_scheduler(self, scheduler_type: str):
+        """Initialize the scheduler backend"""
+        scheduler_type = scheduler_type.lower()
+        
+        if scheduler_type == 'pbs':
+            self._scheduler = PBSScheduler(self.config)
+        elif scheduler_type == 'slurm':
+            self._scheduler = SLURMScheduler(self.config)
+        else:
+            raise ValueError(f"Unknown scheduler: {scheduler_type}")
+    
+    def _auto_detect_scheduler(self):
+        """Auto-detect available scheduler"""
+        import shutil
+        
+        if shutil.which('qsub'):
+            self._init_scheduler('pbs')
+        elif shutil.which('sbatch'):
+            self._init_scheduler('slurm')
+        else:
+            # Default to PBS for script generation
+            self._init_scheduler('pbs')
+    
+    @property
+    def scheduler(self) -> BaseScheduler:
+        """Get the scheduler backend"""
+        if self._scheduler is None:
+            raise RuntimeError("Scheduler not initialized. Call set_config() first.")
+        return self._scheduler
+    
+    # =========================================================================
+    # Job Submission
+    # =========================================================================
+    
+    def submit(self, command: str, name: str,
+               nodes: int = 1, ppn: int = 1,
+               walltime: str = "04:00:00",
+               mem_gb: Optional[int] = None,
+               gpu: bool = False,
+               job_subdir: Optional[str] = None,
+               working_dir: Optional[str] = None,
+               after_ok: Optional[List[str]] = None,
+               after_any: Optional[List[str]] = None,
+               extra_directives: Optional[List[str]] = None,
+               extra_modules: Optional[List[str]] = None,
+               max_retries: int = 0) -> Job:
+        """
+        Submit a job to the scheduler.
         
         Args:
             command: Command to execute
-            name: Job name (auto-generated if not provided)
-            job_subdir: Custom subdirectory name (default: job_id)
+            name: Job name
             nodes: Number of nodes
-            cpus: CPUs per node
-            gpus: GPUs per node
-            memory: Memory (e.g., "4GB", "32GB")
+            ppn: Processors per node
             walltime: Wall time (HH:MM:SS)
-            queue: Queue/partition name
-            account: Account/project name
-            expected_files: List of files that should exist after completion
-            after_ok: Run after these jobs complete successfully
-            after_fail: Run after these jobs fail
-            after_any: Run after these jobs finish (any status)
-            max_retries: Number of times to retry on failure
-            env: Environment variables dict
-            
+            mem_gb: Memory in GB
+            gpu: Whether to request GPU
+            job_subdir: Subdirectory for job files
+            working_dir: Working directory for job
+            after_ok: Job IDs that must complete successfully
+            after_any: Job IDs that must complete (success or fail)
+            extra_directives: Additional scheduler directives
+            extra_modules: Additional modules to load
+            max_retries: Maximum retry attempts
+        
         Returns:
-            Job ID
+            Job object with job_id set
         """
-        # Generate job ID
-        job_id = generate_job_id()
+        # Generate internal ID
+        internal_id = str(uuid.uuid4())[:8]
         
-        # Set defaults
-        if name is None:
-            name = f"job_{job_id}"
-        if job_subdir is None:
-            job_subdir = job_id
-        if expected_files is None:
-            expected_files = []
-        if after_ok is None:
-            after_ok = []
-        if after_fail is None:
-            after_fail = []
-        if after_any is None:
-            after_any = []
-        if env is None:
-            env = {}
-        
-        # Create job directory with custom name
-        job_dir = self.jobs_dir / job_subdir
-        job_dir.mkdir(exist_ok=True, parents=True)
-        
-        # Create resources
-        resources = job_resources(
-            nodes=nodes,
-            cpus=cpus,
-            gpus=gpus,
-            memory=memory,
-            walltime=walltime,
-            queue=queue,
-            account=account
-        )
-        
-        # Create job object
-        j = job(
-            id=job_id,
-            name=name,
-            command=command,
-            workdir=str(job_dir),
-            resources=resources,
-            expected_files=expected_files,
-            after_ok=after_ok,
-            after_fail=after_fail,
-            after_any=after_any,
-            max_retries=max_retries,
-            env=env
-        )
-        
-        # Store in database
-        self.db.add_job(j)
-        
-        # Check if we can submit immediately or need to wait for dependencies
-        if self._dependencies_ready(j):
-            self._submit_job(j)
+        # Determine job directory
+        if job_subdir:
+            job_dir = self.jobs_dir / job_subdir
         else:
-            print(f"job {job_id} waiting for dependencies")
+            job_dir = self.jobs_dir / name
+        job_dir.mkdir(parents=True, exist_ok=True)
         
-        return job_id
-    
-    def _dependencies_ready(self, j: job) -> bool:
-        """Check if job dependencies are satisfied"""
-        # Check after_ok dependencies
-        for dep_id in j.after_ok:
-            dep_job = self.db.get_job(dep_id)
-            if not dep_job or dep_job.status != job_status.completed:
-                return False
+        # File paths
+        script_path = str(job_dir / f"{name}{self.scheduler.script_extension}")
+        output_file = str(job_dir / f"{name}.out")
+        error_file = str(job_dir / f"{name}.err")
+        log_file = str(job_dir / f"{name}.log")
         
-        # Check after_fail dependencies
-        for dep_id in j.after_fail:
-            dep_job = self.db.get_job(dep_id)
-            if not dep_job or dep_job.status != job_status.failed:
-                return False
-        
-        # Check after_any dependencies
-        for dep_id in j.after_any:
-            dep_job = self.db.get_job(dep_id)
-            if not dep_job or dep_job.status not in [job_status.completed, job_status.failed, 
-                                                       job_status.cancelled, job_status.timeout]:
-                return False
-        
-        return True
-    
-    def _submit_job(self, j: job):
-        """Submit job to scheduler"""
-        # Setup paths
-        script_path = Path(j.workdir) / f"{j.name}.sh"
-        stdout_path = Path(j.workdir) / "stdout.log"
-        stderr_path = Path(j.workdir) / "stderr.log"
-        
-        # Build dependency dict for scheduler
-        dependencies = {}
-        if j.after_ok:
-            # Get scheduler IDs for dependencies
-            scheduler_ids = []
-            for dep_id in j.after_ok:
-                dep_job = self.db.get_job(dep_id)
-                if dep_job and dep_job.scheduler_id:
-                    scheduler_ids.append(dep_job.scheduler_id)
-            if scheduler_ids:
-                dependencies['after_ok'] = scheduler_ids
-        
-        if j.after_fail:
-            scheduler_ids = []
-            for dep_id in j.after_fail:
-                dep_job = self.db.get_job(dep_id)
-                if dep_job and dep_job.scheduler_id:
-                    scheduler_ids.append(dep_job.scheduler_id)
-            if scheduler_ids:
-                dependencies['after_fail'] = scheduler_ids
-        
-        if j.after_any:
-            scheduler_ids = []
-            for dep_id in j.after_any:
-                dep_job = self.db.get_job(dep_id)
-                if dep_job and dep_job.scheduler_id:
-                    scheduler_ids.append(dep_job.scheduler_id)
-            if scheduler_ids:
-                dependencies['after_any'] = scheduler_ids
-        
-        # Generate script
-        script_content = self.backend.generate_script(
-            command=j.command,
-            job_name=j.name,
-            resources=j.resources.to_dict(),
-            stdout_path=str(stdout_path),
-            stderr_path=str(stderr_path),
-            dependencies=dependencies if dependencies else None,
-            env=j.env if j.env else None
+        # Build script
+        script_content = self.scheduler.build_script(
+            job_name=name,
+            command=command,
+            nodes=nodes,
+            ppn=ppn,
+            walltime=walltime,
+            mem_gb=mem_gb,
+            gpu=gpu,
+            output_file=output_file,
+            error_file=error_file,
+            working_dir=working_dir or str(Path.cwd()),
+            after_ok=after_ok,
+            after_any=after_any,
+            extra_directives=extra_directives,
+            extra_modules=extra_modules
         )
         
         # Write script
-        script_path.write_text(script_content)
-        script_path.chmod(0o755)
+        with open(script_path, 'w') as f:
+            f.write(script_content)
+        os.chmod(script_path, 0o755)
         
-        # Submit to scheduler
-        try:
-            scheduler_id = self.backend.submit(str(script_path))
-            
-            # Update job
-            self.db.update_job(
-                j.id,
-                scheduler_id=scheduler_id,
-                script_path=str(script_path),
-                stdout_path=str(stdout_path),
-                stderr_path=str(stderr_path),
-                status=job_status.queued,
-                submitted_at=datetime.now()
-            )
-            
-            print(f"submitted job {j.id} (scheduler id: {scheduler_id})")
-            
-        except Exception as e:
-            print(f"failed to submit job {j.id}: {e}")
-            self.db.update_job(j.id, status=job_status.failed, 
-                             failure_reason=str(e), failure_type=failure_type.scheduler)
-    
-    def track(self, job_id: str) -> job_status:
-        """
-        Check status of a single job
-        
-        Args:
-            job_id: Job ID
-            
-        Returns:
-            Current job status
-        """
-        j = self.db.get_job(job_id)
-        if not j:
-            return job_status.unknown
-        
-        # If not yet submitted, check if dependencies are ready
-        if j.status == job_status.pending:
-            if self._dependencies_ready(j):
-                self._submit_job(j)
-                j = self.db.get_job(job_id)  # Reload
-            return j.status
-        
-        # If already terminal state, return it
-        if j.status in [job_status.completed, job_status.failed, 
-                       job_status.cancelled, job_status.timeout]:
-            return j.status
-        
-        # Get status from scheduler
-        if j.scheduler_id:
-            sched_status = self.backend.status(j.scheduler_id)
-            
-            # Update database
-            self.db.update_job(job_id, status=sched_status)
-            
-            # If job finished, check for failures
-            if sched_status in [job_status.completed, job_status.failed, 
-                               job_status.cancelled, job_status.timeout]:
-                self._check_job_completion(job_id)
-                
-                # Check if dependents can now run
-                self._check_dependents(job_id)
-            
-            return sched_status
-        
-        return j.status
-    
-    def _check_job_completion(self, job_id: str):
-        """Check completed job for failures and handle retries"""
-        j = self.db.get_job(job_id)
-        if not j:
-            return
-        
-        # Try to extract exit code from logs if not set
-        if j.exit_code is None and j.stderr_path:
-            exit_code = self.failure_detector.extract_exit_code(j.stderr_path)
-            if exit_code is not None:
-                self.db.update_job(job_id, exit_code=exit_code)
-                j.exit_code = exit_code
-        
-        # Run failure detection
-        failed, ftype, reason, error_lines = self.failure_detector.detect(j)
-        
-        if failed:
-            # Update failure info
-            self.db.update_job(
-                job_id,
-                status=job_status.failed,
-                failure_type=ftype,
-                failure_reason=reason,
-                error_lines=error_lines,
-                completed_at=datetime.now()
-            )
-            
-            # Check if should retry
-            if j.retry_count < j.max_retries:
-                self._retry_job(job_id)
-        else:
-            # Mark as completed
-            self.db.update_job(job_id, completed_at=datetime.now())
-    
-    def _retry_job(self, job_id: str):
-        """Retry a failed job"""
-        j = self.db.get_job(job_id)
-        if not j:
-            return
-        
-        print(f"retrying job {job_id} (attempt {j.retry_count + 1}/{j.max_retries})")
-        
-        # Increment retry count
-        self.db.update_job(job_id, retry_count=j.retry_count + 1)
-        
-        # Resubmit
-        self._submit_job(j)
-    
-    def _check_dependents(self, job_id: str):
-        """Check if any dependent jobs can now run"""
-        dependents = self.db.get_dependents(job_id)
-        
-        for dep_id in dependents:
-            dep_job = self.db.get_job(dep_id)
-            if dep_job and dep_job.status == job_status.pending:
-                if self._dependencies_ready(dep_job):
-                    self._submit_job(dep_job)
-    
-    def monitor(self, job_ids: List[str], poll_interval: int = 30) -> List[Dict]:
-        """
-        Monitor jobs until all complete
-        
-        Args:
-            job_ids: List of job IDs to monitor
-            poll_interval: Seconds between status checks
-            
-        Returns:
-            List of job result dicts
-        """
-        print(f"monitoring {len(job_ids)} jobs...")
-        
-        active = set(job_ids)
-        results = []
-        
-        while active:
-            time.sleep(poll_interval)
-            
-            for job_id in list(active):
-                status = self.track(job_id)
-                
-                if status in [job_status.completed, job_status.failed,
-                             job_status.cancelled, job_status.timeout]:
-                    active.remove(job_id)
-                    
-                    j = self.db.get_job(job_id)
-                    if j:
-                        results.append(j.to_dict())
-                        
-                        if status == job_status.failed:
-                            print(f"job {job_id} failed: {j.failure_reason}")
-                        else:
-                            print(f"job {job_id} {status.value}")
-            
-            if active:
-                print(f"  {len(active)} jobs still active...")
-        
-        print("all jobs completed")
-        return results
-    
-    def cancel(self, job_id: str):
-        """Cancel a job"""
-        j = self.db.get_job(job_id)
-        if j and j.scheduler_id:
-            self.backend.cancel(j.scheduler_id)
-            self.db.update_job(job_id, status=job_status.cancelled)
-            print(f"cancelled job {job_id}")
-    
-    def retry(self, job_id: str) -> str:
-        """
-        Manually retry a failed job
-        
-        Args:
-            job_id: Job ID to retry
-            
-        Returns:
-            New job ID for the retry
-        """
-        j = self.db.get_job(job_id)
-        if not j:
-            raise ValueError(f"job {job_id} not found")
-        
-        # Create new job with same parameters
-        new_job_id = self.submit(
-            command=j.command,
-            name=f"{j.name}_retry",
-            nodes=j.resources.nodes,
-            cpus=j.resources.cpus,
-            gpus=j.resources.gpus,
-            memory=j.resources.memory,
-            walltime=j.resources.walltime,
-            queue=j.resources.queue,
-            account=j.resources.account,
-            expected_files=j.expected_files,
-            env=j.env
+        # Create job object
+        job = Job(
+            name=name,
+            internal_id=internal_id,
+            command=command,
+            script_path=script_path,
+            nodes=nodes,
+            ppn=ppn,
+            walltime=walltime,
+            mem_gb=mem_gb,
+            gpu=gpu,
+            output_file=output_file,
+            error_file=error_file,
+            log_file=log_file,
+            working_dir=working_dir or str(Path.cwd()),
+            job_subdir=job_subdir,
+            after_ok=after_ok or [],
+            after_any=after_any or [],
+            max_retries=max_retries,
+            state=JobState.PENDING
         )
         
-        # Link to parent
-        self.db.update_job(new_job_id, parent_job_id=job_id)
+        # Submit to scheduler
+        job_id = self.scheduler.submit(script_path)
         
-        return new_job_id
+        if job_id:
+            job.job_id = job_id
+            job.state = JobState.SUBMITTED
+            job.submit_time = datetime.now()
+        else:
+            job.state = JobState.FAILED
+        
+        # Save to database
+        self.db.save_job(job)
+        
+        return job
     
-    def list_jobs(self, status: Optional[str] = None, limit: int = 100) -> List[Dict]:
+    def submit_script(self, script_path: str, name: Optional[str] = None) -> Job:
         """
-        List jobs
+        Submit an existing script file.
         
         Args:
-            status: Filter by status (e.g., "failed", "completed")
-            limit: Maximum number to return
-            
+            script_path: Path to script file
+            name: Job name (defaults to script filename)
+        
         Returns:
-            List of job dicts
+            Job object
         """
-        jobs = self.db.list_jobs(status=status, limit=limit)
-        return [j.to_dict() for j in jobs]
+        if not os.path.exists(script_path):
+            raise FileNotFoundError(f"Script not found: {script_path}")
+        
+        name = name or Path(script_path).stem
+        internal_id = str(uuid.uuid4())[:8]
+        
+        job = Job(
+            name=name,
+            internal_id=internal_id,
+            script_path=script_path,
+            state=JobState.PENDING
+        )
+        
+        job_id = self.scheduler.submit(script_path)
+        
+        if job_id:
+            job.job_id = job_id
+            job.state = JobState.SUBMITTED
+            job.submit_time = datetime.now()
+        else:
+            job.state = JobState.FAILED
+        
+        self.db.save_job(job)
+        return job
     
-    def job_info(self, job_id: str) -> Optional[Dict]:
-        """Get detailed job information"""
-        j = self.db.get_job(job_id)
-        return j.to_dict() if j else None
+    # =========================================================================
+    # Job Status and Monitoring
+    # =========================================================================
     
-    def failure_info(self, job_id: str) -> Optional[Dict]:
-        """Get detailed failure information for a job"""
-        j = self.db.get_job(job_id)
-        if not j:
+    def status(self, job_id: str) -> Job:
+        """
+        Get current status of a job.
+        
+        Args:
+            job_id: Scheduler job ID
+        
+        Returns:
+            Updated Job object
+        """
+        # Try to find in database first
+        job = self.db.get_job_by_scheduler_id(job_id)
+        
+        if job is None:
+            # Create minimal job object
+            job = Job(name="unknown", job_id=job_id)
+        
+        # Update status from scheduler
+        status_str = self.scheduler.get_status(job_id)
+        job.state = JobState(status_str) if status_str in [s.value for s in JobState] else JobState.UNKNOWN
+        
+        # Update timing
+        if job.state == JobState.RUNNING and job.start_time is None:
+            job.start_time = datetime.now()
+        elif job.state in (JobState.COMPLETED, JobState.FAILED) and job.end_time is None:
+            job.end_time = datetime.now()
+        
+        # Save updated status
+        if job.internal_id:
+            self.db.save_job(job)
+        
+        return job
+    
+    def refresh(self, job: Job) -> Job:
+        """Refresh job status"""
+        if job.job_id:
+            return self.status(job.job_id)
+        return job
+    
+    def wait(self, job_ids: Union[str, List[str]], poll_interval: int = 10,
+             timeout: Optional[int] = None) -> Dict[str, Job]:
+        """
+        Wait for jobs to complete.
+        
+        Args:
+            job_ids: Single job ID or list of job IDs
+            poll_interval: Seconds between status checks
+            timeout: Maximum wait time in seconds
+        
+        Returns:
+            Dict mapping job_id to final Job object
+        """
+        if isinstance(job_ids, str):
+            job_ids = [job_ids]
+        
+        pending = set(job_ids)
+        results = {}
+        start_time = time.time()
+        
+        while pending:
+            if timeout and (time.time() - start_time) > timeout:
+                break
+            
+            for job_id in list(pending):
+                job = self.status(job_id)
+                
+                if job.is_done:
+                    pending.remove(job_id)
+                    results[job_id] = job
+            
+            if pending:
+                time.sleep(poll_interval)
+        
+        # Add remaining pending jobs
+        for job_id in pending:
+            results[job_id] = self.status(job_id)
+        
+        return results
+    
+    def wait_all(self, poll_interval: int = 10) -> Dict[str, Job]:
+        """Wait for all tracked jobs to complete"""
+        active_jobs = self.db.get_active_jobs()
+        job_ids = [j.job_id for j in active_jobs if j.job_id]
+        return self.wait(job_ids, poll_interval)
+    
+    # =========================================================================
+    # Job Control
+    # =========================================================================
+    
+    def cancel(self, job_id: str) -> bool:
+        """Cancel a job"""
+        success = self.scheduler.cancel(job_id)
+        
+        if success:
+            job = self.db.get_job_by_scheduler_id(job_id)
+            if job:
+                job.state = JobState.CANCELLED
+                job.end_time = datetime.now()
+                self.db.save_job(job)
+        
+        return success
+    
+    def cancel_all(self) -> int:
+        """Cancel all active jobs"""
+        active_jobs = self.db.get_active_jobs()
+        cancelled = 0
+        
+        for job in active_jobs:
+            if job.job_id and self.cancel(job.job_id):
+                cancelled += 1
+        
+        return cancelled
+    
+    def retry(self, job_id: str) -> Optional[Job]:
+        """
+        Retry a failed job.
+        
+        Args:
+            job_id: Scheduler job ID of failed job
+        
+        Returns:
+            New Job object or None if retry not possible
+        """
+        old_job = self.db.get_job_by_scheduler_id(job_id)
+        
+        if old_job is None:
             return None
         
-        return {
-            "job_id": j.id,
-            "name": j.name,
-            "status": j.status.value,
-            "exit_code": j.exit_code,
-            "failure_type": j.failure_type.value if j.failure_type else None,
-            "failure_reason": j.failure_reason,
-            "error_lines": j.error_lines,
-            "stderr_path": j.stderr_path,
-            "stdout_path": j.stdout_path,
-            "retry_count": j.retry_count,
-            "max_retries": j.max_retries,
-        }
-    
-    def cleanup(self, job_id: str):
-        """Remove job files and database entry"""
-        j = self.db.get_job(job_id)
-        if j:
-            # Remove job directory
-            job_dir = Path(j.workdir)
-            if job_dir.exists():
-                shutil.rmtree(job_dir)
-            
-            # Remove from database
-            self.db.delete_job(job_id)
-            print(f"cleaned up job {job_id}")
-    
-    def export_state(self, output_path: str):
-        """Export all job state to JSON file"""
-        jobs = self.db.list_jobs()
-        data = {
-            "exported_at": datetime.now().isoformat(),
-            "total_jobs": len(jobs),
-            "jobs": [j.to_dict() for j in jobs]
-        }
+        if old_job.attempt >= old_job.max_retries + 1:
+            return None
         
-        with open(output_path, 'w') as f:
-            json.dump(data, f, indent=2)
+        # Submit new job
+        new_job = self.submit(
+            command=old_job.command,
+            name=f"{old_job.name}_retry{old_job.attempt}",
+            nodes=old_job.nodes,
+            ppn=old_job.ppn,
+            walltime=old_job.walltime,
+            mem_gb=old_job.mem_gb,
+            gpu=old_job.gpu,
+            working_dir=old_job.working_dir,
+            max_retries=old_job.max_retries
+        )
         
-        print(f"exported state to {output_path}")
+        new_job.attempt = old_job.attempt + 1
+        self.db.save_job(new_job)
+        
+        return new_job
+    
+    # =========================================================================
+    # Information and Statistics
+    # =========================================================================
+    
+    def stats(self) -> Dict[str, int]:
+        """Get job statistics"""
+        return self.db.get_stats()
+    
+    def list_jobs(self, state: Optional[JobState] = None) -> List[Job]:
+        """List jobs, optionally filtered by state"""
+        if state:
+            return self.db.get_jobs_by_state(state)
+        return self.db.get_all_jobs()
+    
+    def list_active(self) -> List[Job]:
+        """List active (non-terminal) jobs"""
+        return self.db.get_active_jobs()
+    
+    def get_job(self, job_id: str) -> Optional[Job]:
+        """Get job by scheduler job ID"""
+        return self.db.get_job_by_scheduler_id(job_id)
+    
+    def clear_completed(self):
+        """Remove completed jobs from database"""
+        jobs = self.db.get_jobs_by_state(JobState.COMPLETED)
+        for job in jobs:
+            self.db.delete_job(job.internal_id)
+    
+    def clear_all(self):
+        """Clear all jobs from database"""
+        self.db.clear_all()
+    
+    # =========================================================================
+    # Utility Methods
+    # =========================================================================
+    
+    def generate_script(self, command: str, name: str,
+                        nodes: int = 1, ppn: int = 1,
+                        walltime: str = "04:00:00",
+                        mem_gb: Optional[int] = None,
+                        gpu: bool = False,
+                        **kwargs) -> str:
+        """
+        Generate batch script content without submitting.
+        
+        Useful for debugging or manual submission.
+        """
+        return self.scheduler.build_script(
+            job_name=name,
+            command=command,
+            nodes=nodes,
+            ppn=ppn,
+            walltime=walltime,
+            mem_gb=mem_gb,
+            gpu=gpu,
+            **kwargs
+        )
+    
+    def print_script(self, command: str, name: str, **kwargs):
+        """Print generated script to stdout"""
+        print(self.generate_script(command, name, **kwargs))
+
+
+# Convenience function
+def housekeeper(config: Union[str, Dict, None] = None,
+                jobs_dir: str = "./jobs",
+                scheduler: Optional[str] = None) -> Housekeeper:
+    """
+    Create a Housekeeper instance.
+    
+    Args:
+        config: Config file path or dict
+        jobs_dir: Directory for job files
+        scheduler: Scheduler type ('pbs' or 'slurm')
+    
+    Returns:
+        Housekeeper instance
+    """
+    return Housekeeper(config=config, jobs_dir=jobs_dir, scheduler=scheduler)
