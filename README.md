@@ -1,4 +1,4 @@
-# Housekeeper v2.0
+# Housekeeper
 
 **HPC Job Management Library for PBS and SLURM**
 
