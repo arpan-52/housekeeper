@@ -16,6 +16,7 @@ from .config import SchedulerConfig, load_config, parse_config
 from .job import Job, JobState
 from .database import JobDatabase
 from .scheduler import PBSScheduler, SLURMScheduler, BaseScheduler
+from .log_checker import check_log, check_job_logs, LogCheckResult, DEFAULT_ERROR_WHITELIST
 
 
 class Housekeeper:
@@ -447,6 +448,86 @@ class Housekeeper:
         """Clear all jobs from database"""
         self.db.clear_all()
     
+    # =========================================================================
+    # Log Checking
+    # =========================================================================
+    
+    def check_log(self, job_id: str, 
+                  whitelist: Optional[List[str]] = None) -> LogCheckResult:
+        """
+        Check job log files for errors.
+        
+        Args:
+            job_id: Scheduler job ID
+            whitelist: List of error patterns to ignore (caller provides)
+        
+        Returns:
+            LogCheckResult with success status and error lines
+        """
+        job = self.db.get_job_by_scheduler_id(job_id)
+        
+        if job is None:
+            return LogCheckResult(
+                success=False,
+                log_path="",
+                error_lines=[f"Job {job_id} not found in database"]
+            )
+        
+        # Determine job directory
+        if job.job_subdir:
+            job_dir = str(self.jobs_dir / job.job_subdir)
+        else:
+            job_dir = str(self.jobs_dir / job.name)
+        
+        return check_job_logs(job_dir, job.name, whitelist)
+    
+    def check_log_file(self, log_path: str,
+                       whitelist: Optional[List[str]] = None) -> LogCheckResult:
+        """
+        Check a specific log file for errors.
+        
+        Args:
+            log_path: Path to log file
+            whitelist: List of error patterns to ignore
+        
+        Returns:
+            LogCheckResult with success status and error lines
+        """
+        return check_log(log_path, whitelist)
+    
+    def wait_and_check(self, job_ids: Union[str, List[str]], 
+                       poll_interval: int = 10,
+                       timeout: Optional[int] = None,
+                       whitelist: Optional[List[str]] = None) -> Dict[str, Tuple[Job, LogCheckResult]]:
+        """
+        Wait for jobs to complete and check their logs.
+        
+        Args:
+            job_ids: Single job ID or list of job IDs
+            poll_interval: Seconds between status checks
+            timeout: Maximum wait time in seconds
+            whitelist: List of error patterns to ignore
+        
+        Returns:
+            Dict mapping job_id to (Job, LogCheckResult) tuples
+        """
+        # Wait for jobs
+        results = self.wait(job_ids, poll_interval, timeout)
+        
+        # Check logs for each completed job
+        checked_results = {}
+        for job_id, job in results.items():
+            log_result = self.check_log(job_id, whitelist)
+            
+            # Update job state if log check found errors
+            if not log_result.success and job.state == JobState.COMPLETED:
+                job.state = JobState.FAILED
+                self.db.save_job(job)
+            
+            checked_results[job_id] = (job, log_result)
+        
+        return checked_results
+
     # =========================================================================
     # Utility Methods
     # =========================================================================

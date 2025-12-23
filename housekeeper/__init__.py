@@ -19,12 +19,18 @@ Usage:
     )
     
     hk.wait(job.job_id)
+    
+    # Check logs for errors (pass your own whitelist)
+    result = hk.check_log(job.job_id, whitelist=["pattern to ignore"])
+    if not result.success:
+        print(f"Errors found: {result.error_lines}")
 """
 
 from .core import Housekeeper, housekeeper
 from .job import Job, JobState
 from .config import SchedulerConfig, load_config, save_default_config
 from .database import JobDatabase
+from .log_checker import check_log, check_job_logs, LogCheckResult, is_whitelisted
 
 __version__ = "2.0.0"
 __all__ = [
@@ -35,5 +41,10 @@ __all__ = [
     'SchedulerConfig',
     'load_config',
     'save_default_config',
-    'JobDatabase'
+    'JobDatabase',
+    # Log checking
+    'check_log',
+    'check_job_logs',
+    'LogCheckResult',
+    'is_whitelisted'
 ]
