@@ -16,7 +16,7 @@ from .config import SchedulerConfig, load_config, parse_config
 from .job import Job, JobState
 from .database import JobDatabase
 from .scheduler import PBSScheduler, SLURMScheduler, BaseScheduler
-from .log_checker import check_log, check_job_logs, LogCheckResult, DEFAULT_ERROR_WHITELIST
+from .log_checker import check_log, check_job_logs, LogCheckResult
 
 
 class Housekeeper:
