@@ -9,7 +9,7 @@ import os
 import uuid
 import time
 from datetime import datetime
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any, Union, Tuple
 from pathlib import Path
 
 from .config import SchedulerConfig, load_config, parse_config
