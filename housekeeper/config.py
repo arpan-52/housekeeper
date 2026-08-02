@@ -38,7 +38,11 @@ class SchedulerConfig:
     
     # Working directories
     working_dir: Optional[str] = None
-    job_dir: str = "./jobs"
+    # None means "not set in the config file" - Housekeeper then falls back to
+    # whatever the caller passed as jobs_dir. Do not give this a string default:
+    # it would be indistinguishable from the user explicitly asking for ./jobs,
+    # and would silently override the caller's choice.
+    job_dir: Optional[str] = None
     
     # PBS-specific
     pbs_resource_style: str = "select"  # 'select' (OpenPBS) or 'nodes' (Torque)
@@ -92,7 +96,7 @@ def parse_config(data: Dict[str, Any]) -> SchedulerConfig:
     config = SchedulerConfig(
         scheduler=scheduler_type,
         working_dir=data.get('working_dir'),
-        job_dir=data.get('job_dir', './jobs')
+        job_dir=data.get('job_dir')
     )
     
     # Parse scheduler-specific config

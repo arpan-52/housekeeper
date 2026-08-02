@@ -38,25 +38,26 @@ class Housekeeper:
     """
     
     def __init__(self, config: Union[str, Dict, SchedulerConfig, None] = None,
-                 jobs_dir: str = "./jobs", scheduler: Optional[str] = None):
+                 jobs_dir: Optional[str] = None, scheduler: Optional[str] = None):
         """
         Initialize Housekeeper.
-        
+
         Args:
             config: Config file path, dict, or SchedulerConfig object
-            jobs_dir: Directory for job scripts and database
+            jobs_dir: Directory for job scripts and database. Used only as a
+                fallback - `job_dir` in the scheduler config file wins.
             scheduler: Override scheduler type ('pbs' or 'slurm')
+
+        jobs_dir is the single source of truth for three things that must agree:
+        where the job script is written, what goes in the scheduler's -o/-e
+        directives, and where check_job_logs() later looks for the output. If
+        they disagree the job runs fine and is then reported as failed because
+        its log "does not exist".
         """
-        self.jobs_dir = Path(jobs_dir)
-        self.jobs_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Database
-        self.db = JobDatabase(str(self.jobs_dir / "housekeeper.db"))
-        
-        # Config
+        # Config must be loaded BEFORE resolving jobs_dir - it may set job_dir.
         self.config: Optional[SchedulerConfig] = None
         self._scheduler: Optional[BaseScheduler] = None
-        
+
         if config:
             self.set_config(config)
         elif scheduler:
@@ -64,7 +65,21 @@ class Housekeeper:
         else:
             # Try to auto-detect
             self._auto_detect_scheduler()
-    
+
+        # Precedence: scheduler config's job_dir > jobs_dir argument > ./jobs.
+        # The config file wins because it is the user's explicit, per-cluster
+        # statement of where logs can actually be written - which is not always
+        # next to the data (some filesystems cannot take scheduler output).
+        resolved = getattr(self.config, 'job_dir', None) if self.config else None
+        if not resolved:
+            resolved = jobs_dir or "./jobs"
+
+        self.jobs_dir = Path(os.path.expanduser(str(resolved))).resolve()
+        self.jobs_dir.mkdir(parents=True, exist_ok=True)
+
+        # Database
+        self.db = JobDatabase(str(self.jobs_dir / "housekeeper.db"))
+
     def set_config(self, config: Union[str, Dict, SchedulerConfig]):
         """
         Set scheduler configuration.
@@ -561,14 +576,15 @@ class Housekeeper:
 
 # Convenience function
 def housekeeper(config: Union[str, Dict, None] = None,
-                jobs_dir: str = "./jobs",
+                jobs_dir: Optional[str] = None,
                 scheduler: Optional[str] = None) -> Housekeeper:
     """
     Create a Housekeeper instance.
-    
+
     Args:
         config: Config file path or dict
-        jobs_dir: Directory for job files
+        jobs_dir: Directory for job files - fallback only, `job_dir` in the
+            config file takes precedence
         scheduler: Scheduler type ('pbs' or 'slurm')
     
     Returns:
