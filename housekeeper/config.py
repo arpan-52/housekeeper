@@ -167,7 +167,12 @@ def create_default_config(scheduler: str = 'pbs') -> Dict[str, Any]:
         return {
             'scheduler': 'pbs',
             'working_dir': None,
-            'job_dir': './jobs',
+            # Left null on purpose. job_dir now OVERRIDES the jobs_dir the
+            # calling application passes, so a template that pins './jobs'
+            # would silently relocate every caller's job directory. Set it only
+            # when the logs genuinely need to live somewhere specific - e.g. a
+            # filesystem the scheduler can actually deliver -o/-e output to.
+            'job_dir': None,
             'pbs': {
                 'resource_style': 'select',  # or 'nodes' for Torque
                 'queues': {
@@ -194,7 +199,12 @@ def create_default_config(scheduler: str = 'pbs') -> Dict[str, Any]:
         return {
             'scheduler': 'slurm',
             'working_dir': None,
-            'job_dir': './jobs',
+            # Left null on purpose. job_dir now OVERRIDES the jobs_dir the
+            # calling application passes, so a template that pins './jobs'
+            # would silently relocate every caller's job directory. Set it only
+            # when the logs genuinely need to live somewhere specific - e.g. a
+            # filesystem the scheduler can actually deliver -o/-e output to.
+            'job_dir': None,
             'slurm': {
                 'account': None,
                 'queues': {
